@@ -29,3 +29,4 @@ Instead of simply train the model to predict new states and hope it will be in t
 ## Additional ideas to improve
 - Train a classifier that can predict gene states, get the most important varriables out of it and try to work with them.  
 - Hierarchical predictions. Predict important/highly varriable genes frist, then based on them fine-tune rest of the remaining expressions. Alternatively we can check if we can approximate better if only using most important/highly varriable genes.
+- Do not add perturbation as a condition vector. Generate new state with this masking condition.
