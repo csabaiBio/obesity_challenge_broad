@@ -25,3 +25,7 @@ We need to build a model that can approximate new state based on the perturbatio
 
 ### Stage Fine Tuning
 Instead of simply train the model to predict new states and hope it will be in the right state, we can apply a discriminator, that has to categorize in what state the predicted gene is. This is a much more sensitive training, compared to a simple regression, yet it can achieve great performance.
+
+## Additional ideas to improve
+- Train a classifier that can predict gene states, get the most important varriables out of it and try to work with them.  
+- Hierarchical predictions. Predict important/highly varriable genes frist, then based on them fine-tune rest of the remaining expressions. Alternatively we can check if we can approximate better if only using most important/highly varriable genes.
