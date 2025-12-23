@@ -1,0 +1,6 @@
+*.png
+*.log
+lightning_logs
+mlruns
+data/*
+*.pyc
