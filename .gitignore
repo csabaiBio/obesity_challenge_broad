@@ -4,3 +4,5 @@ lightning_logs
 mlruns
 data/*
 *.pyc
+wandb
+wandb_key.txt

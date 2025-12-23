@@ -7,6 +7,8 @@ from torchmetrics.wrappers import ClasswiseWrapper
 from torchmetrics.classification import MulticlassConfusionMatrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+from lightning.pytorch.loggers import MLFlowLogger, WandbLogger
+import os
 
 class TransformerVAEEncoder(nn.Module):
     def __init__(self, input_dim=675, d_model=512, n_layers=6, n_heads=8, z_dim=32):
@@ -110,9 +112,10 @@ class TransformerClassifier(nn.Module):
 class StateTrainer(pl.LightningModule):
     def __init__(self,encoder,decoder,categorizer,
                 reconFacor=1.0, kldFactor=1.0, classFactor=1.0,
-                kl_warmup_steps=10_000,free_bits=0.5,noise_warmup=10_000,KLD_MAX:float = 100.,beta_start:float=0.0,
+                kl_warmup_steps=10_000,class_warmup_steps=10_000,free_bits=0.5,noise_warmup=10_000,KLD_MAX:float = 100.,beta_start:float=0.0,
                 multiple_optimizers=False, reductionType ="mean",kld_mode="linear"):
         super().__init__()
+        
         self.encoder = encoder
         self.decoder = decoder
         self.reconFactor = reconFacor
@@ -121,20 +124,24 @@ class StateTrainer(pl.LightningModule):
         self.categorizer = categorizer
         self.KLD_MAX = KLD_MAX
         self.noise_warmup = noise_warmup
+        self.kl_warmup_steps = kl_warmup_steps
+        self.class_warmup_steps = class_warmup_steps
         self.multiple_optimizers = multiple_optimizers
         if multiple_optimizers:
             self.automatic_optimization = False
         self.reduction = reductionType
-        self.kl_warmup_steps = kl_warmup_steps
         self.free_bits = free_bits
         self.kld_mode = kld_mode
         self.beta_start = beta_start
+        
         self.aucMetric = torchmetrics.AUROC(num_classes=4, average=None,task="multiclass")
         self.confmat = MulticlassConfusionMatrix(num_classes=4)
         classes = ['pre_adipo', 'adipo', 'lipo', 'other']
         self.class_names = classes
+        
         self.save_hyperparameters(ignore=['encoder','decoder','categorizer'])
         self.classwise_auc = ClasswiseWrapper(self.aucMetric,labels=classes)
+
     def configure_optimizers(self):
         encoderOptimizer = torch.optim.Adam(self.encoder.parameters(),lr = 1e-3)
         decoderOptimizer = torch.optim.Adam(self.decoder.parameters(),lr = 4e-3)
@@ -161,6 +168,26 @@ class StateTrainer(pl.LightningModule):
         else:
             return min(1.0, self.beta_start + (self.kldFactor * self.global_step / self.kl_warmup_steps))
 
+    def classFactor_weight(self):
+        x = min(self.classFactor,0.8 +  self.classFactor * self.global_step / self.class_warmup_steps)
+        return x
+
+    def logging_step(self,loss_recon,loss_kld,beta,loss_class,total_loss,class_logits,state_indices,mode="Train"):
+        self.log(f"{mode}/loss_recon", loss_recon, prog_bar=True,sync_dist=True)
+        self.log(f"{mode}/loss_kld", loss_kld, prog_bar=True,sync_dist=True)
+        self.log(f"{mode}/beta", beta, prog_bar=True,sync_dist=True)
+        self.log(f"{mode}/loss_class", loss_class, prog_bar=True,sync_dist=True)
+        self.log(f"{mode}/total_loss", total_loss, prog_bar=True,   sync_dist=True)
+        
+        if self.categorizer is not None:
+            auc_scores = self.classwise_auc(class_logits, state_indices)           
+            for aval, class_name in zip(auc_scores.values(),self.class_names): # Use your stored class names
+                    self.log(f"{mode}/AUROC_{class_name}", aval, prog_bar=False, sync_dist=True)
+
+        if mode == "Val" and self.categorizer is not None:
+            self.confmat.update(class_logits, state_indices)
+
+
     def shared_step(self, batch, mode="Train"):
         Xs, _, state = batch
         mu, logvar = self.encoder(Xs)
@@ -178,6 +205,7 @@ class StateTrainer(pl.LightningModule):
             class_logits = self.categorizer(Xs_hat)
             loss_class = nn.functional.cross_entropy(class_logits, state)
         else:
+            class_logits = None
             loss_class = torch.tensor(0.0, device=Xs.device)
 
 
@@ -188,22 +216,12 @@ class StateTrainer(pl.LightningModule):
             state_indices = state.squeeze(1)
         else:
             state_indices = state
-        total_loss = (self.reconFactor * loss_recon+ beta * loss_kld+ self.classFactor * loss_class)
+        classWeight = self.classFactor 
+        #self.classFactor_weight() if beta > 0.95 else 0.8
+        total_loss = (self.reconFactor * loss_recon+ beta * loss_kld+ classWeight * loss_class)
 
         # Logging
-        self.log(f"{mode}/loss_recon", loss_recon, prog_bar=True,sync_dist=True)
-        self.log(f"{mode}/loss_kld", loss_kld, prog_bar=True,sync_dist=True)
-        self.log(f"{mode}/beta", beta, prog_bar=True,sync_dist=True)
-        self.log(f"{mode}/loss_class", loss_class, prog_bar=True,sync_dist=True)
-        self.log(f"{mode}/total_loss", total_loss, prog_bar=True,   sync_dist=True)
-        
-        if self.categorizer is not None:
-            auc_scores = self.classwise_auc(class_logits, state_indices)           
-            for aval, class_name in zip(auc_scores.values(),self.class_names): # Use your stored class names
-                    self.log(f"{mode}/AUROC_{class_name}", aval, prog_bar=False, sync_dist=True)
-
-        if mode == "Val" and self.categorizer is not None:
-            self.confmat.update(class_logits, state_indices)
+        self.logging_step(loss_recon, loss_kld, beta, loss_class, total_loss, class_logits, state_indices, mode=mode)
 
         return total_loss
 
@@ -232,28 +250,40 @@ class StateTrainer(pl.LightningModule):
         loss = self.shared_step(batch,mode="Val")
         return loss
 
+    def getcfmx(self):
+        cm_tensor = self.confmat.compute()
+        cm_numpy = cm_tensor.cpu().numpy()
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(
+            cm_numpy, 
+            annot=True, 
+            fmt='g',            # 'g' prevents scientific notation (e.g., 1e3)
+            cmap='Blues', 
+            xticklabels=self.class_names, 
+            yticklabels=self.class_names,
+            ax=ax
+            )
+        ax.set_xlabel('Predicted')
+        ax.set_ylabel('True')
+        ax.set_title(f'Confusion Matrix - Epoch {self.current_epoch}')
+        temp_filename = f"confusion_matrix{self.current_epoch}.png"
+        return fig, temp_filename
+
     def on_validation_epoch_end(self):
         if self.categorizer is not None:
-            cm_tensor = self.confmat.compute()
-            cm_numpy = cm_tensor.cpu().numpy()
-            fig, ax = plt.subplots(figsize=(10, 8))
-            sns.heatmap(
-                cm_numpy, 
-                annot=True, 
-                fmt='g',            # 'g' prevents scientific notation (e.g., 1e3)
-                cmap='Blues', 
-                xticklabels=self.class_names, 
-                yticklabels=self.class_names,
-                ax=ax
-                )
-            ax.set_xlabel('Predicted')
-            ax.set_ylabel('True')
-            ax.set_title(f'Confusion Matrix - Epoch {self.current_epoch}')
-            temp_filename = "confusion_matrix.png"
-            fig.savefig(temp_filename) 
+            fig, temp_filename = self.getcfmx()
+            unique_filename = f"conf_matrix_epoch_{self.current_epoch:03d}_rank_{self.global_rank}.png"
+            fig.savefig(unique_filename) 
             plt.close(fig)
-            if hasattr(self.logger.experiment, 'log_artifact'):
-                self.logger.experiment.log_artifact(
-                run_id=self.logger.run_id, 
-                local_path=temp_filename, 
-                artifact_path="plots")
+            if self.loggers:
+                for logger in self.loggers:
+                    if isinstance(logger, MLFlowLogger):
+                        logger.experiment.log_artifact(
+                            run_id=logger.run_id, 
+                            local_path=unique_filename, 
+                            artifact_path="plots"
+                        )
+
+        self.confmat.reset()
+        if os.path.exists(unique_filename):
+            os.remove(unique_filename)
