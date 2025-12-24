@@ -113,7 +113,7 @@ class StateTrainer(pl.LightningModule):
     def __init__(self,encoder,decoder,categorizer,
                 reconFactor=1.0, kldFactor=1.0, classFactor=1.0,
                 kl_warmup_steps=10_000,class_warmup_steps=10_000,free_bits=0.5,noise_warmup=10_000,KLD_MAX:float = 100.,beta_start:float=0.0,
-                multiple_optimizers=False, reductionType ="mean",kld_mode="linear"):
+                multiple_optimizers=False, reductionType ="mean",kld_mode="linear",categoryWeights= [1., 1.0, 1.0, 1.0]):
         super().__init__()
         
         self.encoder = encoder
@@ -137,10 +137,12 @@ class StateTrainer(pl.LightningModule):
         self.aucMetric = torchmetrics.AUROC(num_classes=4, average=None,task="multiclass")
         self.confmat = MulticlassConfusionMatrix(num_classes=4)
         classes = ['pre_adipo', 'adipo', 'lipo', 'other']
+        self.lossWeights = torch.tensor(categoryWeights)
         self.class_names = classes
         
         self.save_hyperparameters(ignore=['encoder','decoder','categorizer'])
         self.classwise_auc = ClasswiseWrapper(self.aucMetric,labels=classes)
+        self.EntropyLoss = nn.CrossEntropyLoss(weight=self.lossWeights)
 
     def configure_optimizers(self):
         encoderOptimizer = torch.optim.Adam(self.encoder.parameters(),lr = 1e-3)
