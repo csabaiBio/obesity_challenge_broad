@@ -1,0 +1,10 @@
+free_bits: 0.02
+kl_warmup_steps: 10000
+noise_warmup: 10000
+kldFactor: 1.
+reconFactor: 1.
+classFactor: 1.
+multiple_optimizers: True
+beta_start: 0.85
+kld_mode: "linear"
+class_warmup_steps: 20000 

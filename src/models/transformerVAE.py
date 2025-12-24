@@ -111,14 +111,14 @@ class TransformerClassifier(nn.Module):
 
 class StateTrainer(pl.LightningModule):
     def __init__(self,encoder,decoder,categorizer,
-                reconFacor=1.0, kldFactor=1.0, classFactor=1.0,
+                reconFactor=1.0, kldFactor=1.0, classFactor=1.0,
                 kl_warmup_steps=10_000,class_warmup_steps=10_000,free_bits=0.5,noise_warmup=10_000,KLD_MAX:float = 100.,beta_start:float=0.0,
                 multiple_optimizers=False, reductionType ="mean",kld_mode="linear"):
         super().__init__()
         
         self.encoder = encoder
         self.decoder = decoder
-        self.reconFactor = reconFacor
+        self.reconFactor = reconFactor
         self.kldFactor = kldFactor
         self.classFactor = classFactor
         self.categorizer = categorizer
@@ -165,9 +165,11 @@ class StateTrainer(pl.LightningModule):
             x = min(self.kldFactor,0.1 +  self.kldFactor * self.global_step / self.kl_warmup_steps)
             sigmoid = lambda x: 1/(1 + np.exp(-x))
             return sigmoid(10 * (x - 0.5))
+        elif self.kld_mode == "linear":
+            return min(self.kldFactor, self.beta_start + (self.kldFactor * self.global_step / self.kl_warmup_steps))
         else:
-            return min(1.0, self.beta_start + (self.kldFactor * self.global_step / self.kl_warmup_steps))
-
+            return self.kldFactor
+        
     def classFactor_weight(self):
         x = min(self.classFactor,0.8 +  self.classFactor * self.global_step / self.class_warmup_steps)
         return x

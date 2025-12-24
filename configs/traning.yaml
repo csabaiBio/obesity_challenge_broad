@@ -1,0 +1,5 @@
+batch_size: 128
+max_epochs: 20
+run_name: transformerVAE_experiment
+projectName: obesity_challange
+version: 21

@@ -1,0 +1,5 @@
+    input_dim: 675
+    d_model: 256
+    n_layers: 2
+    n_heads: 8
+    num_classes: 4
