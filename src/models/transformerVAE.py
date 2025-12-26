@@ -108,186 +108,28 @@ class TransformerClassifier(nn.Module):
         class_logits = self.classifier(h_pooled)
         return class_logits
 
-
-class StateTrainer(pl.LightningModule):
-    def __init__(self,encoder,decoder,categorizer,
-                reconFactor=1.0, kldFactor=1.0, classFactor=1.0,
-                kl_warmup_steps=10_000,class_warmup_steps=10_000,free_bits=0.5,noise_warmup=10_000,KLD_MAX:float = 100.,beta_start:float=0.0,
-                multiple_optimizers=False, reductionType ="mean",kld_mode="linear",categoryWeights= [1., 1.0, 1.0, 1.0]):
+class Transfomer_latent_Classifier(nn.Module):
+    def __init__(self, z_dim=32, d_model=128, n_layers=2, n_heads=8, num_classes=4):
         super().__init__()
-        
-        self.encoder = encoder
-        self.decoder = decoder
-        self.reconFactor = reconFactor
-        self.kldFactor = kldFactor
-        self.classFactor = classFactor
-        self.categorizer = categorizer
-        self.KLD_MAX = KLD_MAX
-        self.noise_warmup = noise_warmup
-        self.kl_warmup_steps = kl_warmup_steps
-        self.class_warmup_steps = class_warmup_steps
-        self.multiple_optimizers = multiple_optimizers
-        if multiple_optimizers:
-            self.automatic_optimization = False
-        self.reduction = reductionType
-        self.free_bits = free_bits
-        self.kld_mode = kld_mode
-        self.beta_start = beta_start
-        
-        self.aucMetric = torchmetrics.AUROC(num_classes=4, average=None,task="multiclass")
-        self.confmat = MulticlassConfusionMatrix(num_classes=4)
-        classes = ['pre_adipo', 'adipo', 'lipo', 'other']
-        self.lossWeights = torch.tensor(categoryWeights)
-        self.class_names = classes
-        
-        self.save_hyperparameters(ignore=['encoder','decoder','categorizer'])
-        self.classwise_auc = ClasswiseWrapper(self.aucMetric,labels=classes)
-        self.EntropyLoss = nn.CrossEntropyLoss(weight=self.lossWeights)
 
-    def configure_optimizers(self):
-        encoderOptimizer = torch.optim.Adam(self.encoder.parameters(),lr = 1e-3)
-        decoderOptimizer = torch.optim.Adam(self.decoder.parameters(),lr = 4e-3)
-        if self.multiple_optimizers:
-            return [encoderOptimizer,decoderOptimizer]
-        else:
-            return torch.optim.Adam(self.parameters(),lr = 1e-3)
-        
-    def compute_kl_loss(self, mu, logvar):
-        # KL per latent dimension
-        kl_per_dim = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-        kl_per_dim = torch.clamp(kl_per_dim, min=self.free_bits)
+        self.latent_proj = nn.Linear(z_dim, d_model)
 
-        # Sum over latent dims, mean over batch
-        kl = kl_per_dim.sum(dim=1).mean()
-        return kl
-    
-    def kl_weight(self):
-        # Linear warm-up
-        if self.kld_mode == "sigmoid":
-            x = min(self.kldFactor,0.1 +  self.kldFactor * self.global_step / self.kl_warmup_steps)
-            sigmoid = lambda x: 1/(1 + np.exp(-x))
-            return sigmoid(10 * (x - 0.5))
-        elif self.kld_mode == "linear":
-            return min(self.kldFactor, self.beta_start + (self.kldFactor * self.global_step / self.kl_warmup_steps))
-        else:
-            return self.kldFactor
-        
-    def classFactor_weight(self):
-        x = min(self.classFactor,0.8 +  self.classFactor * self.global_step / self.class_warmup_steps)
-        return x
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=4 * d_model,
+            batch_first=True,
+            norm_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
+        self.classifier = nn.Linear(d_model, num_classes)
 
-    def logging_step(self,loss_recon,loss_kld,beta,loss_class,total_loss,class_logits,state_indices,mode="Train"):
-        self.log(f"{mode}/loss_recon", loss_recon, prog_bar=True,sync_dist=True)
-        self.log(f"{mode}/loss_kld", loss_kld, prog_bar=True,sync_dist=True)
-        self.log(f"{mode}/beta", beta, prog_bar=True,sync_dist=True)
-        self.log(f"{mode}/loss_class", loss_class, prog_bar=True,sync_dist=True)
-        self.log(f"{mode}/total_loss", total_loss, prog_bar=True,   sync_dist=True)
-        
-        if self.categorizer is not None:
-            auc_scores = self.classwise_auc(class_logits, state_indices)           
-            for aval, class_name in zip(auc_scores.values(),self.class_names): # Use your stored class names
-                    self.log(f"{mode}/AUROC_{class_name}", aval, prog_bar=False, sync_dist=True)
-
-        if mode == "Val" and self.categorizer is not None:
-            self.confmat.update(class_logits, state_indices)
-
-
-    def shared_step(self, batch, mode="Train"):
-        Xs, _, state = batch
-        mu, logvar = self.encoder(Xs)
-        logvar = torch.clamp(logvar, min=-6.0, max=2.0)
-        z = self.reparameterize(mu, logvar)
-        #z = z / (z.norm(dim=1, keepdim=True) + 1e-6)
-        Xs_hat = self.decoder(z)
-
-        loss_recon = nn.functional.mse_loss(Xs_hat, Xs, reduction=self.reduction)
-        loss_kld = self.compute_kl_loss(mu, logvar)
-        loss_kld = torch.clamp(loss_kld, max=self.KLD_MAX)
-        beta = self.kl_weight()
-
-        if self.categorizer is not None:
-            class_logits = self.categorizer(Xs_hat)
-            loss_class = nn.functional.cross_entropy(class_logits, state)
-        else:
-            class_logits = None
-            loss_class = torch.tensor(0.0, device=Xs.device)
-
-
-        if state.shape == class_logits.shape:
-            state_indices = torch.argmax(state, dim=1)
-            # 2. If state is [Batch, 1] -> Squeeze to [Batch]
-        elif state.ndim == 2 and state.shape[1] == 1:
-            state_indices = state.squeeze(1)
-        else:
-            state_indices = state
-        classWeight = self.classFactor 
-        #self.classFactor_weight() if beta > 0.95 else 0.8
-        total_loss = (self.reconFactor * loss_recon+ beta * loss_kld+ classWeight * loss_class)
-
-        # Logging
-        self.logging_step(loss_recon, loss_kld, beta, loss_class, total_loss, class_logits, state_indices, mode=mode)
-
-        return total_loss
-
-    
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        eps_scale = min(1.0, self.global_step / self.noise_warmup)
-        return mu + eps_scale*eps * std
-    
-    def training_step(self,batch,batch_idx):
-        if self.multiple_optimizers:
-            encoder_opt, decoder_opt = self.optimizers()
-            loss = self.shared_step(batch,mode="Train")
-            encoder_opt.zero_grad()
-            decoder_opt.zero_grad()
-            self.manual_backward(loss)
-            encoder_opt.step()
-            decoder_opt.step()
-            return loss
-        else:
-            loss = self.shared_step(batch,mode="Train")
-            return loss
-    
-    def validation_step(self,batch,batch_idx):
-        loss = self.shared_step(batch,mode="Val")
-        return loss
-
-    def getcfmx(self):
-        cm_tensor = self.confmat.compute()
-        cm_numpy = cm_tensor.cpu().numpy()
-        fig, ax = plt.subplots(figsize=(10, 8))
-        sns.heatmap(
-            cm_numpy, 
-            annot=True, 
-            fmt='g',            # 'g' prevents scientific notation (e.g., 1e3)
-            cmap='Blues', 
-            xticklabels=self.class_names, 
-            yticklabels=self.class_names,
-            ax=ax
-            )
-        ax.set_xlabel('Predicted')
-        ax.set_ylabel('True')
-        ax.set_title(f'Confusion Matrix - Epoch {self.current_epoch}')
-        temp_filename = f"confusion_matrix{self.current_epoch}.png"
-        return fig, temp_filename
-
-    def on_validation_epoch_end(self):
-        if self.categorizer is not None:
-            fig, temp_filename = self.getcfmx()
-            unique_filename = f"conf_matrix_epoch_{self.current_epoch:03d}_rank_{self.global_rank}.png"
-            fig.savefig(unique_filename) 
-            plt.close(fig)
-            if self.loggers:
-                for logger in self.loggers:
-                    if isinstance(logger, MLFlowLogger):
-                        logger.experiment.log_artifact(
-                            run_id=logger.run_id, 
-                            local_path=unique_filename, 
-                            artifact_path="plots"
-                        )
-
-        self.confmat.reset()
-        if os.path.exists(unique_filename):
-            os.remove(unique_filename)
+    def forward(self, z):
+        # z: (B, z_dim)
+        B = z.size(0)
+        h = self.latent_proj(z)
+        h = h.unsqueeze(1)  # (B, 1, d_model)
+        h = self.encoder(h)
+        h_pooled = h.mean(dim=1)
+        class_logits = self.classifier(h_pooled)
+        return class_logits

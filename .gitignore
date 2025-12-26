@@ -6,3 +6,5 @@ data/*
 *.pyc
 wandb
 wandb_key.txt
+best_run
+*.ckpt

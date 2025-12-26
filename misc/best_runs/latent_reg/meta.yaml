@@ -1,0 +1,14 @@
+artifact_uri: file:///home/bdudas/obesity_challange/mlruns/410825968021990540/d6a8bd7d9dd342ff981329c3bc68570f/artifacts
+end_time: 1766710889759
+entry_point_name: ''
+experiment_id: '410825968021990540'
+lifecycle_stage: active
+run_id: d6a8bd7d9dd342ff981329c3bc68570f
+run_name: latent_categorize_dim=16_dim=16_dim=128
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1766709501685
+status: 3
+tags: []
+user_id: bdudas

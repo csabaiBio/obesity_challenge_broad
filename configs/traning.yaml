@@ -1,5 +1,6 @@
 batch_size: 128
 max_epochs: 20
-run_name: transformerVAE_equalfactors
+run_name: latent_categorize_dim=16_dim=16_dim=128
 projectName: obesity_challange
-version: 30
+version: 19
+classify_on: latent
