@@ -1,4 +1,4 @@
-*.png
+.png
 *.log
 lightning_logs
 mlruns

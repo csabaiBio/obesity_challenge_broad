@@ -506,6 +506,3 @@ class CycleTransformer(pl.LightningModule):
             run_id=self.logger.run_id, 
             local_path=save_path, 
             artifact_path="plots_latent")
-        
-        if os.path.exists(save_path):
-            os.remove(save_path)

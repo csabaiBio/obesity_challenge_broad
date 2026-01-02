@@ -31,7 +31,6 @@ def main_phase2(cfg):
     model.replaceTransition()
     model.add_factors(cfg.obsessionFactor, cfg.diversityFactor)
     cpkt_callback = ModelCheckpoint(monitor="val/total_loss",mode="min",save_top_k=1,filename="best-checkpoint")
-    cfg.run_name = "cycle_transformer_finetune_transition"
     mlflow_logger = MLFlowLogger(experiment_name=cfg.experiment_name,run_name=cfg.run_name)
     trainer = pl.Trainer(max_epochs=cfg.max_epochs,logger=mlflow_logger,accelerator="auto",devices="auto" #, strategy="ddp_find_unused_parameters_true"
                         ,callbacks=[cpkt_callback])

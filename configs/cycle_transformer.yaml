@@ -1,6 +1,6 @@
 experiment_name: "CycleConsistant"
-run_name: "RegularizationGridSearch"
-max_epochs: 10
+run_name: "LatentRegularizedTraining"
+max_epochs: 30
 num_workers: 10
 batch_size: 128
 model_kwargs:
