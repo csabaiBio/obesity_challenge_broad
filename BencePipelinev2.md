@@ -19,8 +19,8 @@ We add this loss to the original loss, therefore the model needs to learn class 
 ### Centroid generation
 Simple autoencoders doesn't regularize their latent space, one solution to this problem is the Varriational Autoencoder pipeline. I will not go too much into detail, but I had to realize that approach will not work in this case.Unfortunatelly class preserving information, does not mean distinguishable latent clustering. 
 We added Centering loss which enforces to create latent space where classes are in separable clusters.
-!["umap-not-centered"]("umap_Epoch_0.png")  
-!["umap-centered"]("umap_Epoch_29.png")  
+!["umap-not-centered"](umap_Epoch_0.png)  
+!["umap-centered"](umap_Epoch_29.png)  
 Note: First image does not show a full training, but in a fully trained model the results are similar. This is just an illustration of how unclustered latent space looks like.
 
 ### Final Loss
