@@ -1,7 +1,7 @@
 batch_size: 128
 max_epochs: 20
-run_name: CosineMSE_recon
+run_name: transformer_vae_pert
 projectName: obesity_challange
-version: 35
+version: 8
 classify_on: latent
-alpha: 0.5
+pretrained: False

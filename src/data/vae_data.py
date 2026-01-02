@@ -26,10 +26,16 @@ def get_data(path:str):
     idx_to_gene = {i: g for g, i in gene_to_idx.items()}
     return obdata, gene_to_idx, idx_to_gene
 
-def get_loaders(path:str,batch_size:int = 64):
+def get_loaders(path:str,batch_size:int = 64,num_workers:int = 3):
     obdata, gene_to_idx, idx_to_gene = get_data(path)
     dataset = CellDataset(obdata, gene_to_idx)
+    if num_workers == 0:
+        pin_memory = False
+        persistent_workers = False
+    else:
+        pin_memory = True
+        persistent_workers = True
     traiset,valset = torch.utils.data.random_split(dataset, [int(0.8*len(dataset)), len(dataset)-int(0.8*len(dataset))])
-    trainloader = torch.utils.data.DataLoader(traiset, batch_size = batch_size,shuffle= True,)
-    valloader = torch.utils.data.DataLoader(valset, batch_size = batch_size,shuffle= False)
+    trainloader = torch.utils.data.DataLoader(traiset, batch_size = batch_size,shuffle= True,num_workers=num_workers,pin_memory=pin_memory,persistent_workers=persistent_workers)
+    valloader = torch.utils.data.DataLoader(valset, batch_size = batch_size,shuffle= False,num_workers=num_workers,pin_memory=pin_memory,persistent_workers=persistent_workers)
     return trainloader, valloader, gene_to_idx, idx_to_gene

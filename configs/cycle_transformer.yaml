@@ -1,0 +1,20 @@
+experiment_name: "CycleConsistant"
+run_name: "RegularizationGridSearch"
+max_epochs: 10
+num_workers: 10
+batch_size: 128
+model_kwargs:
+  input_dim: 675
+  d_model: 256
+  n_layers: 4
+  n_heads: 8
+  z_dim: 256
+  lr: 0.001
+  reconFactr: 10.
+  lossLatentFactr: 1.
+  lossCycleFactr: 0.1
+  lossRegFactr: 0.0001
+  guidance_weight: 5.
+  lossClassFactr: 1.
+  pushLossFactr: 5.
+  centerFactr: 0.5

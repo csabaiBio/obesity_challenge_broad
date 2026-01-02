@@ -8,3 +8,4 @@ wandb
 wandb_key.txt
 best_run
 *.ckpt
+misc/best_runs
