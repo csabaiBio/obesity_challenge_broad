@@ -25,11 +25,10 @@ def main_phase1(cfg):
 def main_phase2(cfg):
     trainloader, valloader, *_ = get_loaders("",batch_size=cfg.batch_size,num_workers=cfg.num_workers)  
     modelKwargs = cfg.model_kwargs
-    modelKwargs["phase"] = 2
-    pretrained_path = "misc/best_runs/cycle/checkpoints/best-checkpoint.ckpt"
+    cpkt_name ="latent_reg"
+    pretrained_path = f"misc/best_runs/{cpkt_name}/checkpoints/best-checkpoint.ckpt"
     model = CycleTransformer.load_from_checkpoint(checkpoint_path = pretrained_path)#(**modelKwargs)
-    model.replaceTransition()
-    model.add_factors(cfg.obsessionFactor, cfg.diversityFactor)
+    model.configure_cycle()
     cpkt_callback = ModelCheckpoint(monitor="val/total_loss",mode="min",save_top_k=1,filename="best-checkpoint")
     mlflow_logger = MLFlowLogger(experiment_name=cfg.experiment_name,run_name=cfg.run_name)
     trainer = pl.Trainer(max_epochs=cfg.max_epochs,logger=mlflow_logger,accelerator="auto",devices="auto" #, strategy="ddp_find_unused_parameters_true"
@@ -38,7 +37,7 @@ def main_phase2(cfg):
 
 if __name__ == "__main__":
     cfg = OmegaConf.load("configs/cycle_transformer.yaml")
-    phase = 1
+    phase = 2
     if phase == 1:
         main_phase1(cfg)
     else:

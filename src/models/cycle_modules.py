@@ -186,3 +186,22 @@ class BertLikeClassifier(nn.Module):
         logits = self.classifier(z)
         return logits
 
+class LatentDiscriminator(nn.Module):
+    def __init__(self, z_dim=256, num_genes=21600):
+        super().__init__()
+        # Condition on the Gene being perturbed!
+        self.gene_embed = nn.Embedding(num_genes, 32)
+        
+        self.net = nn.Sequential(
+            nn.Linear(z_dim + 32, 512),
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 1) # Output: Real (1) vs Fake (0)
+        )
+        
+    def forward(self, z, gene_idx):
+        # Concatenate Latent Vector + Gene Embedding
+        gene_emb = self.gene_embed(gene_idx) # [B, 32]
+        inp = torch.cat([z, gene_emb], dim=1)
+        return self.net(inp)

@@ -17,7 +17,7 @@ import umap
 import pandas as pd
 from src.utils import CenterLoss
 
-from src.models.cycle_modules import TransformerCycleEncoder, TransformerCycleDecoder, LatentTransition, LatentTransition2, LatentClassifier
+from src.models.cycle_modules import TransformerCycleEncoder, TransformerCycleDecoder, LatentTransition, LatentTransition2, LatentClassifier, LatentDiscriminator
 
 
 class CycleTransformer(pl.LightningModule):
@@ -79,6 +79,9 @@ class CycleTransformer(pl.LightningModule):
         weights = weights / weights.sum()
         self.latent_criterion = nn.CrossEntropyLoss(weight=weights)
         self.center_loss = CenterLoss(num_classes=4, feat_dim=z_dim)
+        if phase == 2:
+            for param in self.center_loss.parameters():
+                param.requires_grad = False
         # Checking metrics and classifiers
     
         self.aucMetric = torchmetrics.AUROC(num_classes=4, average=None,task="multiclass")
@@ -88,6 +91,270 @@ class CycleTransformer(pl.LightningModule):
         self.class_names = classes
         self.classwise_auc = ClasswiseWrapper(self.aucMetric,labels=classes)
         self.save_hyperparameters()
+
+    def configure_cycle(self):
+        self.transition_fwd = LatentTransition2(self.num_genes, self.z_dim, cond_dim=self.cond_dim)
+        self.transition_bwd = LatentTransition2(self.num_genes, self.z_dim, cond_dim=self.cond_dim)
+        self.discriminator = LatentDiscriminator(self.z_dim)
+        self.shared_step = self.shared_step_cycle_gan
+        self.configure_optimizers = self.configure_optimizers_cycle_gan
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+        for param in self.latentClassifier.parameters():
+            param.requires_grad = False
+        for param in self.center_loss.parameters():
+            param.requires_grad = False
+        for param in self.center_loss.parameters():
+            param.requires_grad = False
+        for param in self.transition.parameters():
+            param.requires_grad = False
+        self.transition.eval()
+        self.encoder.eval()
+        self.decoder.eval()
+        self.latentClassifier.eval()
+        self.automatic_optimization = False
+        self.phase = 2
+
+
+    def configure_optimizers_cycle_gan(self):
+        gen_params = list(self.transition_fwd.parameters()) + list(self.transition_bwd.parameters())
+        opt_g = torch.optim.AdamW(gen_params, lr=2e-4, betas=(0.5, 0.999), weight_decay=1e-5)
+        
+        # OPTIMIZER 1: Discriminator
+        opt_d = torch.optim.AdamW(self.discriminator.parameters(), lr=2e-4, betas=(0.5, 0.999), weight_decay=1e-5)
+        
+        # Return list of optimizers
+        return [opt_g, opt_d]
+
+
+    def configure_optimizers_cycle(self):
+        params = list(self.transition_fwd.parameters()) + list(self.transition_bwd.parameters())
+        optimizer_transition = torch.optim.AdamW(
+            params, 
+            lr=1e-3, 
+            weight_decay=1e-5
+        )
+        return optimizer_transition
+        
+    def add_instance_noise(self, data, std=0.1):
+        if self.current_epoch > 50: return data # Decay noise later
+        noise = torch.randn_like(data) * std
+        return data + noise
+    def shared_step_cycle_gan(self, batch, optimizer_idx=0, mode='train'):
+        x_pert, x_ctrl, pert_idx, pert_state, ctrl_state = batch
+        
+        # --- 0. Fix Indices (One-Hot -> Long) ---
+        if pert_state.dim() > 1 and pert_state.size(1) > 1:
+            pert_indices = torch.argmax(pert_state, dim=1)
+        else:
+            pert_indices = pert_state.long()
+            
+        if ctrl_state.dim() > 1 and ctrl_state.size(1) > 1:
+            ctrl_indices = torch.argmax(ctrl_state, dim=1)
+        else:
+            ctrl_indices = ctrl_state.long()
+
+        # --- 1. Encode Real Data (Frozen) ---
+        with torch.no_grad():
+            z_ctrl = self.encoder(x_ctrl)       # Real Control
+            z_real_pert = self.encoder(x_pert)  # Real Perturbed
+
+        # =========================================================
+        # OPTIMIZER 0: TRAIN GENERATORS (Fwd & Bwd Transitions)
+        # =========================================================
+        if optimizer_idx == 0:
+            lossDict = {}
+            # A. Forward Cycle (Control -> Fake Pert -> Rec Control)
+            # ----------------------------------------------------
+            # 1. Forward: Add Drug
+            delta_fwd = self.transition_fwd(z_ctrl, pert_idx, ctrl_indices)
+            z_fake_pert = z_ctrl + delta_fwd
+            
+            # 2. Backward: Remove Drug (Reconstruct Control)
+            # Note: We use pert_indices as start state for backward
+            delta_bwd_rec = self.transition_bwd(z_fake_pert, pert_idx, pert_indices)
+            z_rec_ctrl = z_fake_pert + delta_bwd_rec
+            
+            # Loss: Cycle Consistency
+            loss_cycle_ctrl = F.mse_loss(z_rec_ctrl, z_ctrl)
+            lossDict['loss_cycle_ctrl'] = loss_cycle_ctrl
+
+            # B. Backward Cycle (Real Pert -> Fake Ctrl -> Rec Pert)
+            # -----------------------------------------------------
+            # 1. Backward: Remove Drug from REAL perturbed (Imputation of original state)
+            delta_bwd_real = self.transition_bwd(z_real_pert, pert_idx, pert_indices)
+            z_fake_ctrl = z_real_pert + delta_bwd_real
+            
+            # 2. Forward: Put Drug Back
+            delta_fwd_rec = self.transition_fwd(z_fake_ctrl, pert_idx, ctrl_indices)
+            z_rec_pert = z_fake_ctrl + delta_fwd_rec
+            
+            # Loss: Cycle Consistency
+            loss_cycle_pert = F.mse_loss(z_rec_pert, z_real_pert)
+            lossDict['loss_cycle_pert'] = loss_cycle_pert
+            
+            # C. Adversarial Loss (Fool the Discriminator)
+            # --------------------------------------------
+            # We want D to think z_fake_pert is REAL (Score = 1.0)
+            # LSGAN: MSE(D(fake), 1)
+            
+            #!  Check if Discriminator should be like this or not.
+            logits_fake = self.discriminator(z_fake_pert, pert_idx)
+            loss_adv = F.mse_loss(logits_fake, torch.ones_like(logits_fake))
+            lossDict['loss_adv_g'] = loss_adv
+
+            # D. Constraints (Biology & Distribution)
+            # ---------------------------------------
+            
+            
+            # 1. Guidance (Classifier)
+            logits_rec_ctrl = self.latentClassifier(z_rec_ctrl)
+            loss_sem_ctrl = self.latent_criterion(logits_rec_ctrl, ctrl_state)
+            lossDict['loss_sem_ctrl'] = loss_sem_ctrl
+            logits_rec_pert = self.latentClassifier(z_rec_pert)
+            loss_sem_pert = self.latent_criterion(logits_rec_pert, pert_state)
+            lossDict['loss_sem_pert'] = loss_sem_pert
+            loss_semantic_cycle = loss_sem_ctrl + loss_sem_pert
+
+            #logits_cls = self.latentClassifier(z_fake_pert)
+            #loss_guidance = self.latent_criterion(logits_cls, pert_state)
+            
+            # 2. MMD (Distribution Matching - Optional but recommended for stability)
+            loss_mmd = 0.0
+            unique_states = torch.unique(pert_indices)
+            for state in unique_states:
+                mask = (pert_indices == state)
+                if mask.sum() > 1:
+                    loss_mmd += self.mmd_loss(z_fake_pert[mask], z_real_pert[mask])
+            if len(unique_states) > 0:
+                loss_mmd /= len(unique_states)
+            lossDict['loss_mmd'] = loss_mmd
+                
+            # 3. Anti-Identity (Force movement away from control)
+
+            #loss_anti_id = self.calculate_anti_identity_loss_v2(logits_fake_pert, ctrl_indices)
+            # TOTAL GENERATOR LOSS
+            # Weights: Cycle is paramount. Guidance is secondary. GAN is the "tie-breaker".
+            g_loss = (10.0 * (loss_cycle_ctrl + loss_cycle_pert) + 
+                      2.0 * loss_semantic_cycle + 
+                      5.0 * loss_adv +   # GAN loss usually has lower weight in CycleGAN
+                      100.0 * loss_mmd # + 
+                      #10.0 * loss_anti_id
+                      )
+            lossDict["g_total_loss"] = g_loss
+            self.logging_metrics(mode, lossDict)
+            
+            # Log AUC only during Generator step
+            with torch.no_grad():
+                logits_real = self.latentClassifier(z_real_pert)                
+                self.logAUROC(mode, logits_rec_pert, logits_real, pert_state)
+                self.log_collapse_metrics2(mode,z_ctrl,z_fake_pert,z_real_pert)
+                
+            return g_loss
+
+        # =========================================================
+        # OPTIMIZER 1: TRAIN DISCRIMINATOR
+        # =========================================================
+        if optimizer_idx == 1:
+            # Train D to output 1 for Real and 0 for Fake
+            
+            # 1. Real Data
+            logits_real = self.discriminator(self.add_instance_noise(z_real_pert), pert_idx)
+            loss_real = F.mse_loss(logits_real, torch.ones_like(logits_real)*0.9)
+            
+            # 2. Fake Data
+            # We must regenerate fake data (or detach it) so we don't backprop to G
+            with torch.no_grad():
+                delta_fwd = self.transition_fwd(z_ctrl, pert_idx, ctrl_indices)
+                z_fake_pert = z_ctrl + delta_fwd
+            
+            logits_fake = self.discriminator(self.add_instance_noise(z_fake_pert.detach()), pert_idx)
+            loss_fake = F.mse_loss(logits_fake, torch.zeros_like(logits_fake))
+            
+            # Total Discriminator Loss
+            d_loss = 0.5 * (loss_real + loss_fake)
+            
+            self.logging_metrics(mode, {'d_loss': d_loss, 'd_real': logits_real.mean(), 'd_fake': logits_fake.mean()})
+            return d_loss
+
+
+
+    def shared_step_cycle_only(self, batch, mode):
+        x_pert, x_ctrl, pert_idx, pert_state, ctrl_state = batch
+        
+        # 0. Prepare Indices (Fix for One-Hot crash)
+        if pert_state.dim() > 1 and pert_state.size(1) > 1:
+            pert_indices = torch.argmax(pert_state, dim=1)
+        else:
+            pert_indices = pert_state.long()
+            
+        if ctrl_state.dim() > 1 and ctrl_state.size(1) > 1:
+            ctrl_indices = torch.argmax(ctrl_state, dim=1)
+        else:
+            ctrl_indices = ctrl_state.long()
+
+        # 1. Encode (Frozen Phase 1)
+        with torch.no_grad():
+            z_ctrl = self.encoder(x_ctrl)       # Real Control
+            z_real_pert = self.encoder(x_pert)  # Real Perturbed
+
+        delta_fwd = self.transition_fwd(z_ctrl, pert_idx, ctrl_indices)
+        z_fake_pert = z_ctrl + delta_fwd
+        
+        # Step 2: Remove Drug (Backward)
+        # Note: We use pert_indices as the "start state" for the backward step
+        delta_bwd_rec = self.transition_bwd(z_fake_pert, pert_idx, pert_indices)
+        z_rec_ctrl = z_fake_pert + delta_bwd_rec
+        
+        # LOSS 1: Forward Cycle Consistency (Must return to start)
+        loss_cycle_fwd = F.mse_loss(z_rec_ctrl, z_ctrl)
+
+        delta_bwd_real = self.transition_bwd(z_real_pert, pert_idx, pert_indices)
+        z_fake_ctrl = z_real_pert + delta_bwd_real
+        
+        delta_fwd_rec = self.transition_fwd(z_fake_ctrl, pert_idx, ctrl_indices)
+        z_rec_pert = z_fake_ctrl + delta_fwd_rec
+        
+        loss_cycle_bwd = F.mse_loss(z_rec_pert, z_real_pert)
+        
+        # 1. Classification Guidance (Biological Identity)
+        logits_fake_pert = self.latentClassifier(z_fake_pert)
+        loss_guidance = self.latent_criterion(logits_fake_pert, pert_state)
+        loss_mmd = 0.0
+        unique_states = torch.unique(pert_indices)
+        for state in unique_states:
+            mask = (pert_indices == state)
+            if mask.sum() > 1:
+                loss_mmd += self.mmd_loss(z_fake_pert[mask], z_real_pert[mask])
+        if len(unique_states) > 0:
+            loss_mmd /= len(unique_states)
+
+        # 3. Anti-Identity (Force Movement)
+        loss_anti_id = self.calculate_anti_identity_loss(logits_fake_pert, ctrl_indices)
+        total_loss = (
+            10.0 * (loss_cycle_fwd + loss_cycle_bwd) +  # Strong structural constraint
+            50.0 * loss_guidance +                      # Strong biological target
+            100.0 * loss_mmd +                          # Cloud matching
+            10.0 * loss_anti_id                         # Prevent laziness
+        )
+        
+        # Logging
+        lossDict = {
+            'total_loss': total_loss, 
+            'loss_cycle': loss_cycle_fwd + loss_cycle_bwd,
+            'loss_guidance': loss_guidance, 
+            'loss_mmd': loss_mmd
+        }
+        self.logging_metrics(mode, lossDict)
+        
+        with torch.no_grad():
+            logits_real = self.latentClassifier(z_real_pert)
+            self.logAUROC(mode, logits_fake_pert, logits_real, pert_state)
+
+        return total_loss
+        
 
     def phase_one_shared_step(self,batch,mode):
         x_pert, x_ctrl, pert_idx, pert_state, ctrl_state = batch
@@ -181,8 +448,8 @@ class CycleTransformer(pl.LightningModule):
         
         loss_diversity = self.calculate_entropy_loss(logits_pred)
         pred_classes = torch.argmax(logits_pred, dim=1)
-        fraction_class_1 = (pred_classes == 0).float().mean()
-        loss_obsession = F.relu(fraction_class_1 - 0.25) * 100.0
+        fraction_class_0 = (pred_classes == 0).float().mean()
+        loss_obsession = F.relu(fraction_class_0 - 0.25) * 100.0
 
         
         total_loss = (100.0 * loss_mmd_total + 
@@ -239,9 +506,25 @@ class CycleTransformer(pl.LightningModule):
             self.manual_backward(classLoss)
             classifier_opt.step()
             return loss
+        
         else:
-            loss = self.shared_step(batch,mode="Train")
-        return loss
+            opt_g, opt_d = self.optimizers()
+            
+            g_loss = self.shared_step_cycle_gan(batch, optimizer_idx=0, mode="Train")
+            
+            opt_g.zero_grad()
+            self.manual_backward(g_loss)
+            # Optional: Clip gradients for generator stability
+            self.clip_gradients(opt_g, gradient_clip_val=0.5, gradient_clip_algorithm="norm")
+            opt_g.step()
+            
+            if batch_idx % 5 == 0:
+                d_loss = self.shared_step_cycle_gan(batch, optimizer_idx=1, mode="Train")
+                
+                opt_d.zero_grad()
+                self.manual_backward(d_loss)
+                opt_d.step()
+            return g_loss
 
     def validation_step(self, batch, batch_idx):
         return self.shared_step(batch, mode='val')
@@ -269,6 +552,45 @@ class CycleTransformer(pl.LightningModule):
     )
         return optimizer_transition
 
+    
+    def log_collapse_metrics2(self, mode, z_ctrl, z_fake_pert, z_real_pert):
+        """
+        Diagnoses Mode Collapse, Identity Mapping, and Instability.
+        """
+        # 1. Detect IDENTITY MAPPING (Laziness)
+        # Measure how far the model actually moved the points
+        delta = z_fake_pert - z_ctrl
+        delta_mag = torch.norm(delta, p=2, dim=1).mean()
+        
+        # Compare to how big the latent vectors are naturally
+        # If delta is 0.1 but vector is 10.0, the model is doing nothing (1% change).
+        z_mag = torch.norm(z_ctrl, p=2, dim=1).mean()
+        movement_ratio = delta_mag / (z_mag + 1e-8)
+        
+        self.log(f"{mode}/Health_Delta_Mag", delta_mag)
+        self.log(f"{mode}/Health_Movement_Ratio", movement_ratio)
+
+        # 2. Detect MODE COLLAPSE (The "Single Output" Problem)
+        # Check the standard deviation of the OUTPUT batch.
+        # If the model outputs the same vector for everyone, std -> 0.
+        fake_std = z_fake_pert.std(dim=0).mean() # Average variability across dimensions
+        real_std = z_real_pert.std(dim=0).mean() # Baseline variability of real data
+        
+        # We want the Fake Diversity to match Real Diversity (Ratio ~ 1.0)
+        # If Ratio < 0.1, you have Mode Collapse.
+        diversity_ratio = fake_std / (real_std + 1e-8)
+        
+        self.log(f"{mode}/Health_Diversity_Real", real_std)
+        self.log(f"{mode}/Health_Diversity_Fake", fake_std)
+        self.log(f"{mode}/Health_Diversity_Ratio", diversity_ratio)
+
+        # 3. Detect CONDITION IGNORE (Is it ignoring the gene index?)
+        # If every sample gets the exact same delta (regardless of input), 
+        # the variance of 'delta' will be low.
+        delta_std = delta.std(dim=0).mean()
+        self.log(f"{mode}/Health_Delta_Diversity", delta_std)
+
+    
     def log_collapse_metrics(self, z, delta, z_cycle):
         # 1. Check for Dead Neurons (Dimensional Collapse)
         # Calculate std across the batch
@@ -427,6 +749,25 @@ class CycleTransformer(pl.LightningModule):
             prob_of_staying = torch.exp(ctrl_log_probs)
             
             return prob_of_staying.mean()
+
+            Python
+
+    def calculate_anti_identity_loss_v2(self, logits_pred, start_state_indices):
+        """
+        Strongly penalizes any probability mass assigned to the starting class.
+        """
+        probs = torch.softmax(logits_pred, dim=1)
+
+        # Get the probability assigned to the class we started at
+        # gather expects index to have same dim as probs
+        p_start = probs.gather(1, start_state_indices.unsqueeze(1)).squeeze(1)
+
+        # We want p_start to be 0.
+        # -log(1 - p_start) grows exponentially as p_start approaches 1.
+        # Ideally, we want to MAXIMIZE (1 - p_start), i.e., MINIMIZE -log(1 - p_start)
+        loss = -torch.log(1 - p_start + 1e-8).mean()
+
+        return loss
 
     def visualize_latent_space(self, title="Latent Space UMAP"):
         """
