@@ -29,10 +29,9 @@ def main_phase2(cfg):
     pretrained_path = f"misc/best_runs/{cpkt_name}/checkpoints/best-checkpoint.ckpt"
     model = CycleTransformer.load_from_checkpoint(checkpoint_path = pretrained_path)#(**modelKwargs)
     model.configure_cycle()
-    cpkt_callback = ModelCheckpoint(monitor="val/total_loss",mode="min",save_top_k=1,filename="best-checkpoint")
+    cpkt_callback = ModelCheckpoint(monitor="val/g_total_loss",mode="min",save_top_k=1,filename="best-checkpoint")
     mlflow_logger = MLFlowLogger(experiment_name=cfg.experiment_name,run_name=cfg.run_name)
-    trainer = pl.Trainer(max_epochs=cfg.max_epochs,logger=mlflow_logger,accelerator="auto",devices="auto" #, strategy="ddp_find_unused_parameters_true"
-                        ,callbacks=[cpkt_callback])
+    trainer = pl.Trainer(max_epochs=cfg.max_epochs,logger=mlflow_logger,accelerator="auto",devices="auto" ,callbacks=[cpkt_callback])
     trainer.fit(model,train_dataloaders=trainloader,val_dataloaders=valloader)
 
 if __name__ == "__main__":

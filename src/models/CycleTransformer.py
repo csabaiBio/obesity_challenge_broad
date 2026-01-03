@@ -242,7 +242,7 @@ class CycleTransformer(pl.LightningModule):
                       5.0 * loss_adv +   # GAN loss usually has lower weight in CycleGAN
                       100.0 * loss_mmd # + 
                       #10.0 * loss_anti_id
-                      )
+                    )
             lossDict["g_total_loss"] = g_loss
             self.logging_metrics(mode, lossDict)
             
@@ -527,7 +527,14 @@ class CycleTransformer(pl.LightningModule):
             return g_loss
 
     def validation_step(self, batch, batch_idx):
-        return self.shared_step(batch, mode='val')
+        if self.phase == 1:
+            return self.shared_step(batch, mode='val')
+        else:
+            # For CycleGAN, validate only the generator
+            g_loss = self.shared_step_cycle_gan(batch, optimizer_idx=0, mode='val')
+            d_loss = self.shared_step_cycle_gan(batch, optimizer_idx=1, mode='val')
+            return g_loss + d_loss
+        
 
     def configure_optimizers_phase_one(self):
         classifier_params = list(self.latentClassifier.parameters()) 
@@ -645,17 +652,18 @@ class CycleTransformer(pl.LightningModule):
             os.remove(unique_filename)
 
     def on_validation_epoch_end(self):
-        cfx1 = self.confmat.compute()
-        fig, temp_filename = self.getcfmx(cfx1)
-        self.log_cfm(fig,name_tag="generated")
-        cfx2 = self.confmat2.compute()
-        fig2, temp_filename2 = self.getcfmx(cfx2)
-        self.log_cfm(fig2,name_tag="real")
-        self.confmat.reset()
-        self.confmat2.reset()
-        if not self.trainer.sanity_checking:
-            if (self.current_epoch % 10 == 0) or (self.current_epoch == self.trainer.max_epochs - 1):
-                    self.visualize_latent_space(title=f"Epoch {self.current_epoch}")
+        if self.phase == 1:
+            cfx1 = self.confmat.compute()
+            fig, temp_filename = self.getcfmx(cfx1)
+            self.log_cfm(fig,name_tag="generated")
+            cfx2 = self.confmat2.compute()
+            fig2, temp_filename2 = self.getcfmx(cfx2)
+            self.log_cfm(fig2,name_tag="real")
+            self.confmat.reset()
+            self.confmat2.reset()
+            if not self.trainer.sanity_checking:
+                if (self.current_epoch % 10 == 0) or (self.current_epoch == self.trainer.max_epochs - 1):
+                        self.visualize_latent_space(title=f"Epoch {self.current_epoch}")
 
 
     def calculate_push_loss(self, z_ctrl, z_pred, z_real_pert):
