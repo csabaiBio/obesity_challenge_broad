@@ -205,3 +205,33 @@ class LatentDiscriminator(nn.Module):
         gene_emb = self.gene_embed(gene_idx) # [B, 32]
         inp = torch.cat([z, gene_emb], dim=1)
         return self.net(inp)
+
+
+class DeltaTransition(nn.Module):
+    def __init__(self, z_dim=256, hidden_dim=512):
+        super().__init__()
+        
+        # Input is now:
+        # 1. z_ctrl (Current State)
+        # 2. z_delta_theoretical (The "Instruction" from the Encoder)
+        
+        self.net = nn.Sequential(
+            # We concatenate state + theoretical_change
+            nn.Linear(z_dim * 2, hidden_dim), 
+            nn.LeakyReLU(0.2),
+            ResidualBlock(hidden_dim),
+            ResidualBlock(hidden_dim),
+            nn.Linear(hidden_dim, z_dim)
+        )
+        # Zero init for stability
+        nn.init.zeros_(self.net[-1].weight)
+
+    def forward(self, z_ctrl, z_theoretical_delta):
+        # z_theoretical_delta = Encoder(Input_Zeroed) - Encoder(Input_Ctrl)
+        
+        inp = torch.cat([z_ctrl, z_theoretical_delta], dim=1)
+        
+        # Predict the Biological Cascade (The "Real" Delta)
+        delta_pred = self.net(inp)
+        
+        return delta_pred

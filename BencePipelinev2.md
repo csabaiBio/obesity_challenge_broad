@@ -57,3 +57,26 @@ $\mathcal{L}_{G} = MSE(D_{\phi}(T^{fwd,bwd}_{\Theta_1, \Theta_2}(Z_{ctrl,pert}),
 
 ### Extra regularizations
 To further regularize the transition model, I added Maximum Mean Discrepancy loss between real and fake (transformed) latent vectors. Since it's a GAN-like training, the generator could collapse to a single point in latent space. MMD loss will enforce to create similar distributions between real and fake latent vectors.
+
+### Prompting
+To solve the problem of unseen perturbation effect during training, we implement a pre-embedding fake perturbation effect. This will take a copy of the original gene expression vector, change the perturbed expression value to -5 (for transition and normalization purposes, otherwise it would be zero) and then we embed both to a latent vector. This two latent vector will be substracted from each other and will go into the transition transformer as a condition (similar to any kind of prompt-condition in Attention-based models).  
+
+$$
+X_{\text{fake}}[i] =
+\begin{cases}
+X_{\text{ctrl}}[i], & \text{if } i \neq \text{pert\_idx}, \\
+-5, & \text{if } i = \text{pert\_idx}.
+\end{cases}
+$$  
+
+$$
+Z_{\text{fake}} = E_{\theta}(X_{\text{fake}})$$  
+
+$$Z_{\text{prompt}} = Z_{\text{ctrl}} - Z_{\text{fake}}$$
+
+Therefore the transitioned latent vector will be:
+$$
+Z^{fwd}_{pert} = T^{fwd}_{\Theta_1}(Z_{ctrl}, Z_{prompt})
+$$
+$$Z^{bwd}_{ctrl} = T^{bwd}_{\Theta_2}(Z_{pert}, Z_{prompt})$$
+Note that we used the same prompt for both forward and backward transformations. This is due to the fact that we don't actually know what is the inverse of the perturbation, or at least I don't have any knowledge about it. So the backward transition model should learn what would be an ideal inversion of this specific perturbation, which generated the perturbed state.
