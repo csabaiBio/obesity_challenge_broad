@@ -207,6 +207,31 @@ class LatentDiscriminator(nn.Module):
         return self.net(inp)
 
 
+class SemanticDiscriminator(nn.Module):
+    def __init__(self, z_dim=256):
+        super().__init__()
+        # REMOVED: self.gene_embed = nn.Embedding(num_genes, 32)
+        # We no longer need a lookup table. The "Prompt" is the embedding.
+        
+        self.net = nn.Sequential(
+            # Input: Latent State (z_dim) + Semantic Prompt (z_dim)
+            # 256 + 256 = 512 input features
+            nn.Linear(z_dim * 2, 512),
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 1) # Output: Real (1) vs Fake (0)
+        )
+        
+    def forward(self, z, z_prompt):
+        """
+        z: The cell state to evaluate (Real or Fake)
+        z_prompt: The 'Instruction' vector describing the perturbation
+        """
+        # Concatenate the State and the Instruction
+        inp = torch.cat([z, z_prompt], dim=1)
+        return self.net(inp)
+
 class DeltaTransition(nn.Module):
     def __init__(self, z_dim=256, hidden_dim=512):
         super().__init__()

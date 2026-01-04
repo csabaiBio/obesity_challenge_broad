@@ -1,5 +1,7 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"  
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"
 
 from src.data.perturbation_data import get_loaders
 from src.models.CycleTransformer import CycleTransformer
@@ -33,7 +35,8 @@ def main_phase2(cfg):
     cfg.experiment_name = "LearningAllPerturb"
     cfg.run_name = "CycleTransformer_v2_allPerturbations"
     mlflow_logger = MLFlowLogger(experiment_name=cfg.experiment_name,run_name=cfg.run_name)
-    trainer = pl.Trainer(max_epochs=cfg.max_epochs,logger=mlflow_logger,accelerator="auto",devices="auto" ,callbacks=[cpkt_callback],strategy="ddp_find_unused_parameters_true")
+    trainer = pl.Trainer(max_epochs=cfg.max_epochs,logger=mlflow_logger,accelerator="auto",devices="auto" 
+                         ,callbacks=[cpkt_callback],strategy="ddp_find_unused_parameters_true", num_sanity_val_steps=0)
     trainer.fit(model,train_dataloaders=trainloader,val_dataloaders=valloader)
 
 
