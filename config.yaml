@@ -1,0 +1,25 @@
+experiment_name: "Obesity"
+
+max_epochs: 30
+num_workers: 16
+batch_size: 256
+
+model_kwargs:
+  input_dim: 675
+  d_model: 256
+  n_layers: 4
+  n_heads: 8
+  z_dim: 256
+  reconFactr: 10.
+  lossClassFactr: 1.
+  lossLatentFactr: 1.
+  centerFactr: 2.
+  n_real_genes: 21592
+  num_classes: 4
+  lossCycleFactr: 15.0 
+  semanticCycleFactr: 5.0 
+  adversarialFactr: 1.0 
+  mmdFactr: 10.0
+  lossRegFactr: 0.0001
+
+  

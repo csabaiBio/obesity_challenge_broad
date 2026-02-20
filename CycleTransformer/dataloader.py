@@ -1,8 +1,9 @@
 import numpy as np
 import anndata as ad
 import torch
-
+import pandas as pd
 import scipy.sparse
+import pickle
 
 class CellDataset(torch.utils.data.Dataset):
     def __init__(self, adataTarget, adataInput, gene_to_idx, seq_length: int = 32):
@@ -59,9 +60,7 @@ class CellDataset(torch.utils.data.Dataset):
                 input_state)
     
 def get_data(path:str):
-    dataroot = path + "data/"
-    h5data = "obesity_challenge_1"
-    obdata = ad.read_h5ad(f"{dataroot}/{h5data}.h5ad")
+    obdata = ad.read_h5ad(path)
     gene_to_idx = {g: i for i, g in enumerate(obdata.var.index.to_numpy())}
     idx_to_gene = {i: g for g, i in gene_to_idx.items()}
     return obdata, gene_to_idx, idx_to_gene
@@ -75,23 +74,8 @@ def get_loaders(path:str = "",batch_size:int = 64,num_workers:int = 6):
     persistent_workers = True if num_workers > 0 else False
 
     dataset = CellDataset(targetData, inputData, gene_to_idx)
-    traiset,valset = torch.utils.data.random_split(dataset, [int(0.9*len(dataset)), len(dataset)-int(0.9*len(dataset))])
+    traiset,valset = torch.utils.data.random_split(dataset, [int(0.95*len(dataset)), len(dataset)-int(0.95*len(dataset))])
     trainloader = torch.utils.data.DataLoader(traiset, batch_size = batch_size,shuffle= True,num_workers=num_workers,persistent_workers=persistent_workers,pin_memory=pin_memory)
     valloader = torch.utils.data.DataLoader(valset, batch_size = batch_size,shuffle= False,num_workers=num_workers,persistent_workers=persistent_workers,pin_memory=pin_memory    )
     
     return trainloader, valloader, gene_to_idx, idx_to_gene
-
-if __name__ == "__main__":
-    path:str = ""
-    batch_size:int = 64
-    num_workers:int = 6
-    obdata, gene_to_idx, idx_to_gene = get_data(path)
-
-    bdata, gene_to_idx, idx_to_gene = get_data(path)
-    targetData = obdata[obdata.obs.gene != "NC"]
-    targetData = targetData[targetData.obs.gene.isin(targetData.var.index.to_numpy()), :]
-    inputData = obdata[obdata.obs.gene == "NC"]
-    pin_memory = True if num_workers > 0 else False
-    persistent_workers = True if num_workers > 0 else False
-    #inData, valData = torch.utils.data.random_split(targetData, [int(0.9*len(targetData)), len(targetData)-int(0.9*len(targetData))])
-    #inData.write_h5ad("data/train_data.h5ad")

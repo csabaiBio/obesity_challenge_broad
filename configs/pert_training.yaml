@@ -1,7 +1,0 @@
-batch_size: 128
-max_epochs: 20
-run_name: transformer_vae_pert
-projectName: obesity_challange
-version: 8
-classify_on: latent
-pretrained: False

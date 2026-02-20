@@ -1,7 +1,0 @@
-batch_size: 128
-max_epochs: 20
-run_name: CosineMSE_recon
-projectName: obesity_challange
-version: 35
-classify_on: latent
-alpha: 0.5

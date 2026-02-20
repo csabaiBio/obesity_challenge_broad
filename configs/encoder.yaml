@@ -1,5 +1,0 @@
-input_dim: 675
-d_model: 512
-n_layers: 6
-n_heads: 8
-z_dim: 128
